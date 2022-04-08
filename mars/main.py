@@ -24,6 +24,6 @@ async def startup():
         await conn.run_sync(BaseDAO.metadata.create_all)
 
     async with sessionmaker() as session:
-        user = UserDAO(email="bob@test.com")
+        user = UserDAO(email="eli@noteable.io")
         session.add(user)
         await session.commit()

@@ -11,11 +11,10 @@ from fastapi.responses import ORJSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 from starlette import status
 
-from mars.db import get_session_maker
+from mars.db import session_maker
 from mars.models.idempotency_key import IdempotencyKeyDAO, IdempotencyKeyRecoveryPoint
 
 logger = structlog.get_logger(__name__)
-sessionmaker = get_session_maker()
 
 
 class ReturnValue(abc.ABC):
@@ -48,7 +47,12 @@ class Response(ReturnValue):
 
 class AtomicPhase:
     UNSET = object()
-    LOCK_TIMEOUT = timedelta(hours=48)
+
+    # Number of seconds passed which we consider a held idempotency key lock to be
+    # defunct and eligible to be locked again by a different API call. We try to
+    # unlock keys on our various failure conditions, but software is buggy, and
+    # this might not happen 100% of the time, so this is a hedge against it.
+    LOCK_TIMEOUT = timedelta(seconds=90)
 
     def __init__(self, idempotency_key: str, user_id: int):
         super().__init__()
@@ -61,7 +65,7 @@ class AtomicPhase:
         self._exit_stack = AsyncExitStack()
 
     async def __aenter__(self):
-        self.session = sessionmaker()
+        self.session = session_maker()
         await self._exit_stack.enter_async_context(self.session)
         self._transaction = await self._exit_stack.enter_async_context(self.session.begin())
         return self
@@ -71,7 +75,7 @@ class AtomicPhase:
 
         if exc_type is not None:
             try:
-                async with sessionmaker() as session, session.begin():
+                async with session_maker() as session, session.begin():
                     await IdempotencyKeyDAO.update_by_key(session, self.idempotency_key, self.user_id, locked_at=None)
             except:  # noqa
                 logger.critical("failed to update idempotency key", exc_info=True)
@@ -119,7 +123,7 @@ class AtomicPhaseGroup:
         return AtomicPhase(self.idempotency_key, self.user_id)
 
     async def get_idempotency_key(self) -> Optional[IdempotencyKeyDAO]:
-        async with sessionmaker() as session:
+        async with session_maker() as session:
             return await IdempotencyKeyDAO.get_by_key_or_none(session, self.idempotency_key, self.user_id)
 
     async def get_response(self) -> ORJSONResponse:
@@ -163,6 +167,7 @@ class AtomicPhaseGroup:
                     request_method=self.request.method,
                     request_params=request_body_dict,
                     request_path=self.request.url.path,
+                    request_path_params=self.request.path_params,
                 )
 
     @classmethod
@@ -173,6 +178,9 @@ class AtomicPhaseGroup:
         user_id: int = Depends(lambda: 1),
     ):
         """Create a `AtomicPhaseGroup` via FastAPI dependency injection."""
+
+        if not x_idempotency_key:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing X-Idempotency-Key header")
 
         async with cls(
             idempotency_key=x_idempotency_key,

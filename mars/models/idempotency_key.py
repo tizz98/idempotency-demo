@@ -32,6 +32,7 @@ class IdempotencyKeyDAO(BaseDAO):
     request_method = sa.Column(sa.String(length=10), nullable=False)
     request_params = sa.Column(JSONB, nullable=False)
     request_path = sa.Column(sa.String(length=100), nullable=False)
+    request_path_params = sa.Column(JSONB, nullable=False)
 
     # for finished requests, stored status code and response body
     response_code = sa.Column(sa.Integer)
