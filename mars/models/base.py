@@ -1,9 +1,9 @@
 from typing import Optional
 
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import as_declarative
-import sqlalchemy as sa
 
 
 @as_declarative()
@@ -24,7 +24,7 @@ class BaseDAO:
     )
 
     @classmethod
-    async def get(cls, session: AsyncSession, model_id: int) -> Optional["BaseDAO"]:
+    async def get_by_id(cls, session: AsyncSession, model_id: int) -> Optional["BaseDAO"]:
         stmt = select(cls).where(cls.id == model_id)
         return await (await session.execute(stmt)).scalar_one()
 
@@ -33,3 +33,7 @@ class BaseDAO:
         model = cls(**kwargs)
         session.add(model)
         return model
+
+    def update(self, **kwargs) -> None:
+        for key, value in kwargs.items():
+            setattr(self, key, value)

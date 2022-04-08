@@ -1,13 +1,13 @@
 from typing import Optional
 
-from sqlalchemy import update, select
+import sqlalchemy as sa
+import sqlalchemy.orm as orm
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mars.models.base import BaseDAO
-import sqlalchemy as sa
-import sqlalchemy.orm as orm
 
 
 class IdempotencyKeyRecoveryPoint:
@@ -26,9 +26,7 @@ class IdempotencyKeyDAO(BaseDAO):
         server_default=sa.func.now(),
         default=sa.func.now(),
     )
-    locked_at = sa.Column(
-        sa.TIMESTAMP(timezone=True), server_default=sa.func.now(), default=sa.func.now()
-    )
+    locked_at = sa.Column(sa.TIMESTAMP(timezone=True), server_default=sa.func.now(), default=sa.func.now())
 
     # parameters of the incoming request
     request_method = sa.Column(sa.String(length=10), nullable=False)
@@ -45,9 +43,7 @@ class IdempotencyKeyDAO(BaseDAO):
     user = orm.relationship("UserDAO")
 
     @classmethod
-    async def get_by_key(
-        cls, session: AsyncSession, /, key: str, user_id: int
-    ) -> "IdempotencyKeyDAO":
+    async def get_by_key(cls, session: AsyncSession, /, key: str, user_id: int) -> "IdempotencyKeyDAO":
         key = await cls.get_by_key_or_none(session, key, user_id)
         if key is None:
             raise NoResultFound("Idempotency key not found")
@@ -61,16 +57,6 @@ class IdempotencyKeyDAO(BaseDAO):
         return (await session.execute(stmt)).scalar()
 
     @classmethod
-    async def update_by_key(
-        cls, session: AsyncSession, /, key: str, user_id: int, **kwargs
-    ) -> None:
-        stmt = (
-            update(cls)
-            .where(cls.user_id == user_id, cls.idempotency_key == key)
-            .values(**kwargs)
-        )
+    async def update_by_key(cls, session: AsyncSession, /, key: str, user_id: int, **kwargs) -> None:
+        stmt = update(cls).where(cls.user_id == user_id, cls.idempotency_key == key).values(**kwargs)
         await session.execute(stmt)
-
-    def update(self, **kwargs) -> None:
-        for key, value in kwargs.items():
-            setattr(self, key, value)

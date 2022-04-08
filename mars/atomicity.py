@@ -1,22 +1,18 @@
 import abc
-import asyncio
-import uuid
 from contextlib import AsyncExitStack
-from datetime import timezone, datetime, timedelta
-from typing import Any, Union, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional, Union
 
 import orjson
 import structlog
 from asyncpg import SerializationError
-from fastapi import HTTPException
+from fastapi import Depends, Header, HTTPException, Request
 from fastapi.responses import ORJSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, AsyncSessionTransaction
 from starlette import status
-from starlette.requests import Request
 
-from mars.db import get_session_maker, engine
-from mars.models import IdempotencyKeyDAO, UserDAO, BaseDAO
-from mars.models.idempotency_key import IdempotencyKeyRecoveryPoint
+from mars.db import get_session_maker
+from mars.models.idempotency_key import IdempotencyKeyDAO, IdempotencyKeyRecoveryPoint
 
 logger = structlog.get_logger(__name__)
 sessionmaker = get_session_maker()
@@ -60,18 +56,14 @@ class AtomicPhase:
         self.idempotency_key = idempotency_key
         self.user_id = user_id
         self.session: Union[AsyncSession, AtomicPhase.UNSET] = AtomicPhase.UNSET
-        self._transaction: Union[
-            AsyncSessionTransaction, AtomicPhase.UNSET
-        ] = AtomicPhase.UNSET
+        self._transaction: Union[AsyncSessionTransaction, AtomicPhase.UNSET] = AtomicPhase.UNSET
         self._return_value: Union[ReturnValue, AtomicPhase.UNSET] = AtomicPhase.UNSET
         self._exit_stack = AsyncExitStack()
 
     async def __aenter__(self):
         self.session = sessionmaker()
         await self._exit_stack.enter_async_context(self.session)
-        self._transaction = await self._exit_stack.enter_async_context(
-            self.session.begin()
-        )
+        self._transaction = await self._exit_stack.enter_async_context(self.session.begin())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -80,9 +72,7 @@ class AtomicPhase:
         if exc_type is not None:
             try:
                 async with sessionmaker() as session, session.begin():
-                    await IdempotencyKeyDAO.update_by_key(
-                        session, self.idempotency_key, self.user_id, locked_at=None
-                    )
+                    await IdempotencyKeyDAO.update_by_key(session, self.idempotency_key, self.user_id, locked_at=None)
             except:  # noqa
                 logger.critical("failed to update idempotency key", exc_info=True)
 
@@ -98,9 +88,7 @@ class AtomicPhase:
             return
 
         async with AtomicPhase(self.idempotency_key, self.user_id) as return_phase:
-            key = await IdempotencyKeyDAO.get_by_key(
-                return_phase.session, self.idempotency_key, self.user_id
-            )
+            key = await IdempotencyKeyDAO.get_by_key(return_phase.session, self.idempotency_key, self.user_id)
             await self._return_value.call(key)
 
     def set_recovery_point(self, name: str):
@@ -132,12 +120,14 @@ class AtomicPhaseGroup:
 
     async def get_idempotency_key(self) -> Optional[IdempotencyKeyDAO]:
         async with sessionmaker() as session:
-            return await IdempotencyKeyDAO.get_by_key_or_none(
-                session, self.idempotency_key, self.user_id
-            )
+            return await IdempotencyKeyDAO.get_by_key_or_none(session, self.idempotency_key, self.user_id)
 
     async def get_response(self) -> ORJSONResponse:
         key = await self.get_idempotency_key()
+        assert key is not None, "idempotency key not found"
+        assert (
+            key.recovery_point == IdempotencyKeyRecoveryPoint.FINISHED
+        ), "idempotency key recovery point is not finished"
         return ORJSONResponse(key.response_body, key.response_code)
 
     async def start_atomic_phases(self) -> None:
@@ -154,11 +144,7 @@ class AtomicPhaseGroup:
 
                 # only acquire a lock if the key is unlocked or its lock has expired
                 # because the original request was long enough ago
-                if (
-                    key.locked_at
-                    and key.locked_at
-                    > datetime.now(timezone.utc) - AtomicPhase.LOCK_TIMEOUT
-                ):
+                if key.locked_at and key.locked_at > datetime.now(timezone.utc) - AtomicPhase.LOCK_TIMEOUT:
                     raise HTTPException(status.HTTP_409_CONFLICT, "request in progress")
 
                 # Lock the key and update the latest run unless the request is already finished
@@ -179,45 +165,18 @@ class AtomicPhaseGroup:
                     request_path=self.request.url.path,
                 )
 
+    @classmethod
+    async def dependency(
+        cls,
+        request: Request,
+        x_idempotency_key: str = Header(""),
+        user_id: int = Depends(lambda: 1),
+    ):
+        """Create a `AtomicPhaseGroup` via FastAPI dependency injection."""
 
-async def async_main():
-    async with engine.begin() as conn:
-        await conn.run_sync(BaseDAO.metadata.drop_all)
-        await conn.run_sync(BaseDAO.metadata.create_all)
-
-    async with sessionmaker() as session:
-        user = UserDAO(email="bob@test.com")
-        session.add(user)
-        await session.commit()
-
-    test_key = str(uuid.uuid4())
-
-    async def body():
-        return {"type": "http.request", "body": b'{"name": "bob"}'}
-
-    request = Request(
-        scope={
-            "type": "http",
-            "url": "http://localhost/foo",
-            "method": "POST",
-            "path": "/foo",
-            "headers": [("idempotency-key", test_key)],
-        },
-        receive=body,
-    )
-
-    async with AtomicPhaseGroup(test_key, user.id, request) as group:
-        async with group.atomic_phase() as phase:
-            phase.set_recovery_point("test")
-
-        async with group.atomic_phase() as phase:
-            phase.set_response(status.HTTP_200_OK, {"foo": "bar"})
-
-    response = await group.get_response()
-
-    async with AtomicPhase(str(uuid.uuid4()), user.id) as phase:
-        await phase.session.execute("SELECT 1")
-        raise Exception("oops")
-
-
-asyncio.run(async_main())
+        async with cls(
+            idempotency_key=x_idempotency_key,
+            user_id=user_id,
+            request=request,
+        ) as atomic_phase_group:
+            yield atomic_phase_group

@@ -1,5 +1,6 @@
-from mars.models.base import BaseDAO
 import sqlalchemy as sa
+
+from mars.models.base import BaseDAO
 
 
 class UserDAO(BaseDAO):

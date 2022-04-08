@@ -3,6 +3,9 @@ name = "idempotency-demo"
 version = "0.1.0"
 description = ""
 authors = ["Elijah Wilson <eli@noteable.io>"]
+packages = [
+    { include = "mars" },
+]
 
 [tool.poetry.dependencies]
 python = "^3.10"
@@ -25,7 +28,16 @@ ipython = "^8.2.0"
 ipdb = "^0.13.9"
 flake8 = "^4.0.1"
 flake8-docstrings = "^1.6.0"
+nox = "^2022.1.7"
+nox-poetry = "^0.9.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.isort]
+profile = "black"
+
+[tool.black]
+line-length = 120
+target-version = ["py310"]
