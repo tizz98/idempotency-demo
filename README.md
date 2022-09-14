@@ -9,3 +9,7 @@ pyenv local idempotency-demo-3.10.7
 pip install nox nox_poetry
 nox -s serve
 ```
+
+## Attribution
+
+Inspired by https://brandur.org/idempotency-keys
